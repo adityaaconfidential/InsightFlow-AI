@@ -1,0 +1,163 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16
+    container_name: insightflow_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: insightflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - insightflow_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: insightflow_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - insightflow_network
+
+  # Kafka Message Broker
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: insightflow_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    networks:
+      - insightflow_network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: insightflow_kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    networks:
+      - insightflow_network
+
+  # Airflow Services
+  airflow-postgres:
+    image: postgres:16
+    container_name: airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    networks:
+      - insightflow_network
+
+  airflow-webserver:
+    image: apache/airflow:2.7.0
+    container_name: insightflow_airflow
+    depends_on:
+      - airflow-postgres
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__FERNET_KEY: "d6Vefz50DYouvzxf06G1MvUupMjh9ZL0Z8v8VnBe1bM="
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - insightflow_network
+    command: webserver
+
+  airflow-scheduler:
+    image: apache/airflow:2.7.0
+    container_name: insightflow_airflow_scheduler
+    depends_on:
+      - airflow-postgres
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__FERNET_KEY: "d6Vefz50DYouvzxf06G1MvUupMjh9ZL0Z8v8VnBe1bM="
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - insightflow_network
+    command: scheduler
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: insightflow_backend
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/insightflow
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    networks:
+      - insightflow_network
+    command: python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: insightflow_frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - insightflow_network
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+
+  # Milvus Vector Database
+  milvus:
+    image: milvusdb/milvus:latest
+    container_name: insightflow_milvus
+    environment:
+      COMMON_STORAGETYPE: local
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    networks:
+      - insightflow_network
+
+networks:
+  insightflow_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  milvus_data:
